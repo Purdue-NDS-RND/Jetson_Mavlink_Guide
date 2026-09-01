@@ -159,6 +159,48 @@ Before attempting autonomous control, verify all of the following:
 
 Changing to `GUIDED` mode or calling an arm service can be rejected even with a healthy connection. Treat that rejection as a flight-controller safety result to investigate, not as proof that MAVROS is broken.
 
+## Tuning telemetry rates for real-world use
+
+A connected flight controller does not send every MAVLink message at the same speed. Some telemetry may arrive many times per second, while other messages may be slow or absent. This can make a ROS topic look frozen even though `/mavros/state` still reports a healthy connection.
+
+MAVROS provides services that let a companion-computer application request the telemetry rates it needs. The gist of a typical setup is:
+
+```bash
+# Ask ArduPilot to stream the standard telemetry groups at about 20 Hz.
+ros2 service call /mavros/set_stream_rate mavros_msgs/srv/StreamRate \
+  "{stream_id: 0, message_rate: 20, on_off: true}"
+
+# Ask specifically for MAVLink message 245 at 2 Hz.
+ros2 service call /mavros/set_message_interval mavros_msgs/srv/MessageInterval \
+  "{message_id: 245, message_rate: 2.0}"
+```
+
+| Request | Meaning | Why it can help |
+| --- | --- | --- |
+| Stream `0` at `20 Hz` | Requests all standard MAVLink stream groups at a faster general rate | Gives monitoring, logging, and estimation nodes fresher telemetry instead of waiting on a slow default stream |
+| Message `245` at `2 Hz` | Requests `EXTENDED_SYS_STATE`, which includes landed state and VTOL state | Lets a mission or safety state machine notice takeoff/landing transitions without using bandwidth for an unnecessarily high update rate |
+
+The two calls solve slightly different problems. `set_stream_rate` is a broad, legacy stream-group request; it does not guarantee that every individual message will arrive at exactly 20 Hz. `set_message_interval` targets one MAVLink message and is the better choice when one specific ROS topic is missing or too slow.
+
+### When should you use this?
+
+Rate requests are useful when:
+
+- an autonomy node needs timely position, attitude, or system-state updates;
+- a recorder or dashboard receives data too slowly;
+- `/mavros/extended_state` is missing or too infrequent for reliable landing detection; or
+- you want consistent behavior across flight-controller configurations with different default stream rates.
+
+Do not automatically request the highest possible rate. More telemetry consumes link bandwidth and flight-controller processing time, and an overloaded link can make important messages later or less reliable. Choose the lowest rate that satisfies the application: fast-changing control or estimation data may need a higher rate, while landed state is usually useful at only a few updates per second.
+
+Confirm what you actually receive rather than assuming the request was honored:
+
+```bash
+ros2 topic hz /mavros/extended_state
+```
+
+The autopilot may limit, group, or reject rate requests depending on its firmware and link configuration. These requests should also be treated as connection setup: if the vehicle reconnects, a production application should check the rates and request them again when necessary.
+
 ## Using pymavlink instead
 
 [pymavlink](https://mavlink.io/en/mavgen_python/) is a low-level Python MAVLink library. Unlike MAVROS, it does not create ROS topics or services. Your program receives MAVLink messages, reads their fields, sends commands, waits for acknowledgements, and manages timeouts itself.
@@ -261,4 +303,5 @@ Only one program can bind a particular UDP port. If SITL, MAVROS, a ground stati
 - [MAVROS ROS 2 documentation](https://docs.ros.org/en/jazzy/p/mavros/)
 - [pymavlink usage guide](https://mavlink.io/en/mavgen_python/)
 - [ArduPilot MAVLink basics](https://ardupilot.org/dev/docs/mavlink-basics.html)
+- [MAVLink `EXTENDED_SYS_STATE` message (ID 245)](https://mavlink.io/en/messages/common.html#EXTENDED_SYS_STATE)
 - [MAVLink heartbeat protocol](https://mavlink.io/en/services/heartbeat.html)
